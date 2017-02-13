@@ -1,30 +1,178 @@
 ---
-title: "Classe Prediction in Weight Lifting Exercises Dataset"
+title: "Classification in Weight Lifting Exercises Dataset"
 author: "Eakalak Suthampan"
 date: "February 12, 2017"
-output: html_document
+output:
+  html_document:
+    keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE)
 ```
 
-## R Markdown
+#Overview
+Dataset for this report is "Weight Lifting Exercises Dataset" which comes from [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+In this dataset, Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The goal for this report will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise. This is the "classe" variable in the dataset.
 
-```{r cars}
-summary(cars)
+#Loading And Preprocessing The Data
+The training data for this report are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+```{r}
+if(!file.exists("pml-training.csv"))
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","pml-training.csv")
+if(!file.exists("pml-testing.csv"))
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv","pml-testing.csv")
+rawTrain <- read.table("pml-training.csv", header = TRUE, sep = ",", na.strings = c("","NA"))
+rawTest <- read.table("pml-testing.csv", header = TRUE, sep = ",", na.strings = c("","NA"))
 ```
 
-## Including Plots
+I found that there are many columns that have almost entirely "NA" values so I filtered these columns out (the remaining columns are the same on both training and testing).
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+no_na_cols_train <- colnames(rawTrain[,colSums(is.na(rawTrain)) < 0.5*nrow(rawTrain)])
+no_na_cols_test <- colnames(rawTest[,colSums(is.na(rawTest)) < 0.5*nrow(rawTest)])
+training <- rawTrain[,no_na_cols_train]
+testing <- rawTest[,no_na_cols_test]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+I also filter out unnecessary columns which are not measurements from accelerometers.
+```{r}
+training <- training[,8:60]
+testing <- testing[,8:59]
+```
+
+Since the testing data does not include classe variable so I will split training into training and pretesting (pretesting is used for evaluate accuracy).
+
+```{r}
+library(caret)
+set.seed(999)
+inTrain <- createDataPartition(y=training$classe,p=0.8,list=FALSE)
+pretesting <- training[-inTrain,]
+training <- training[inTrain,]
+str(training)
+dim(pretesting)
+```
+
+#Classification Algorithms Selection
+From the dataset, I expected that Random Forest and GBM (Gradient Boosting) will be good candidate algorithms. Decision tree is also included in this comparison just for showing the simple model. 
+
+For each model I will use **5 K-Fold crossvalidation** to select its optimal model.
+
+For speeding purpose I will use smaller training and testing data to perform the comparison.
+```{r}
+set.seed(7436)
+trainingSmall <- training[sample(nrow(training), nrow(training)),]
+testingSmall <- trainingSmall[1:1000,]
+trainingSmall <- trainingSmall[1001:5000,]
+train_control <- trainControl(method="cv", number=5)
+```
+
+### Decision Tree
+```{r}
+set.seed(12345)
+model1 <- train(classe ~ ., data=trainingSmall, trControl=train_control, method="rpart")
+model1
+```
+
+Notice that, Decision Tree uses crossvalidation to find its optimal model accross the tuning parameter "cp".
+
+### Random Forest
+```{r}
+set.seed(12345)
+ptm <- proc.time() # start timer
+model2 <- train(classe ~ ., data=trainingSmall, trControl=train_control, method="rf")
+proc.time() - ptm  # stop timer
+model2
+```
+
+Notice that, Random Forest uses crossvalidation to find its optimal model accross the tuning parameter "mtry".
+
+### GBM
+```{r}
+set.seed(12345)
+ptm <- proc.time() # start timer
+model3 <- train(classe ~ ., data=trainingSmall, trControl=train_control, method="gbm", verbose = FALSE)
+proc.time() - ptm  # stop timer
+model3
+```
+
+Notice that, GBM uses crossvalidation to find its optimal model accross the tuning parameters "n.trees" and "interaction.depth".
+
+### Models Comparison
+Next, I will evaluate each model using testingSmall data and compare their accuracy.
+
+```{r}
+model1Cm <- confusionMatrix(testingSmall$classe, predict(model1,testingSmall))
+model2Cm <- confusionMatrix(testingSmall$classe, predict(model2,testingSmall))
+model3Cm <- confusionMatrix(testingSmall$classe, predict(model3,testingSmall))
+
+paste("Model1 Decision Tree accuracy is",model1Cm$overall[1]*100,"%")
+paste("Model2 Random Forest accuracy is",model2Cm$overall[1]*100,"%")
+paste("Model3 GBM accuracy is",model3Cm$overall[1]*100,"%")
+```
+
+You can see that Random Forest is slightly better than GBM. So I select Random Forest to be used as classification algorithm. 
+
+#The Selected Algorithm: Random Forest 
+
+I will apply Random Forest to the large training data to build model then evaluate accuracy using pretesting data. For "randomForest" package, there are no need to do crossvalidation as stated in [http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr).
+
+Caution: this execution chunk may takes a long time to executed. 
+
+```{r}
+library(randomForest)
+#training <- training[sample(nrow(training), nrow(training)),]
+#training <- training[1:5000,]
+ptm <- proc.time() # start timer
+set.seed(555)
+rfFit <- randomForest(classe ~ ., data=training, proximity = TRUE, importance = TRUE)
+proc.time() - ptm  # stop timer
+confusionMatrix(pretesting$classe,predict(rfFit,pretesting))
+plot(rfFit)
+```
+
+As you can see from the plot. The default parameter "ntree" is 500 but Error seems to be in steady state since trees < 100. So I can adjust "ntree" parameter to be 100 so that it can execute faster. 
+
+For overfitting, You can see that accuracy on the training data is `r confusionMatrix(training$classe,predict(rfFit))$overall[1]*100`% and accuracy on pretesting data is `r confusionMatrix(pretesting$classe,predict(rfFit,pretesting))$overall[1]*100`%. Since both accuracies from training and pretesting are comparable So I hope it will not overfit :). 
+
+### Outlier
+From "randomForest" package, I can plot outliers as follow. 
+```{r}
+plot(outlier(rfFit),type="h",col=c("red", "green", "blue", "yellow", "black")[as.numeric(training$classe)], main="Outlier By Classe")
+legend("topright",  lwd = 1, col = c("red", "green", "blue", "yellow", "black"), legend = levels(training$classe))
+
+```
+
+### Variable Importance
+From "randomForest" package, I can show the ploting of top 20 Variable Importance as follow.
+```{r}
+varImpPlot(rfFit, n.var = 20)
+```
+
+There are two metrics for measure Variable Importance. First is "MeanDecreaseAccuracy" which show that if you drop that variable out how much the accuracy will be decreased. So Higher "MeanDecreaseAccuracy" means more importance for that variable. Second is "MeanDecreaseGini" which is used to measure how well the variable can classify data. So Higher "MeanDecreaseGini" means more importance for that variable.
+
+### Class Center
+
+The class Center will show the centroid of features that represent each classe. 
+```{r}
+classCenter(training[,-53], training[,53], rfFit$prox)
+```
+
+### out of sample error
+out of sample error is an error on a new testing data which is different data from the training. Thus out of sample error in this Random Forest is the error on the pretesting data which is 
+```{r}
+paste((1 - confusionMatrix(pretesting$classe,predict(rfFit,pretesting))$overall[1])*100,"%")
+```
+
+# Prediction Test Cases
+Here are predictions on 20 different test cases of the testing data.
+```{r}
+predict(rfFit,testing)
+```
+
